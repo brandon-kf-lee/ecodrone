@@ -15,21 +15,64 @@
 const char* ssid = "TELLO-F1AFF9";
 const char* tello_ip = "192.168.10.1";
 const int control_port = 8889; /* Port to send commands (control, set, read) */
-const int status_port = 8890; /* (Unused) port to recieve Tello status */
+const int state_port = 8890; /* Port to recieve Tello state */
 const char* file_name = "/data1.csv"; /* TODO: hard coded for now, fine a way to change the name every time the program is run */
 
 int connected;
 WiFiUDP udp;
+WiFiUDP state_server;
+
+/* TODO: split off tello functions into its own file */
+class TelloState{
+    public: 
+        TelloState(){
+            num_vals = 16;
+        }
+
+        void update_values(float vals[16]){
+            pitch = vals[0];
+            roll = vals[1];
+            yaw = vals[2];
+            vgx = vals[3];
+            vgy = vals[4];
+            vgz = vals[5];
+            templ = vals[6];
+            temph = vals[7];
+            tof = vals[8];
+            h = vals[9];
+            bat = vals[10];
+            baro = vals[11];
+            time = vals[12];
+            agx = vals[13];
+            agy = vals[14];
+            agz = vals[15];
+        }
+        
+        int num_vals; /* Total number of state values */
+        int pitch, roll, yaw; /* Drone orientation, in degrees*/
+        int vgx, vgy, vgz; /* Speed in x, y, z directions */
+        int templ, temph; /* Lowest and highest temperature, in celcius */
+        int tof; /* Time of flight distance sensor measurement, mounted below the drone, in cm, */
+        int h; /* Relative height, in cm */
+        int bat; /* Battery level, in % */
+        float baro; /* Barometer measurement, in cm */
+        int time; /* Time since motor on, in s */
+        float agx, agy, agz; /* Acceleration in x, y, z directions */
+};
+
+TelloState tello_state;
 
 SensirionI2CScd4x scd4x;
 
 TaskHandle_t sensor_read_t;
+TaskHandle_t update_state_t;
 TaskHandle_t drone_ctrl_t;
 
 
 /* Helper functions --------------------------------------------------------------------------------------------------------- */
+
 /* Initialise connection from ESP32 to Tello */
-void initConnection() {
+void init_connection() {
     //Initialise in station mode, disconnect from any previous connections, and begin a connection to the specified Tello's ssid 
     WiFi.mode(WIFI_STA);
     WiFi.disconnect(true);
@@ -41,9 +84,9 @@ void initConnection() {
     }
     Serial.printf("%s connected.\n", ssid);
 
-    //Bind to Tello
+    //Bind to Tello control & state port
     udp.begin(WiFi.localIP(), control_port);
-    Serial.println(WiFi.localIP()); //192.168.10.2
+    state_server.begin(state_port);
 }
 
 /* TODO: lots of error checking. reference djitellopy and their implementation for what to look out for */
@@ -56,7 +99,7 @@ String send_cmd_sync(const char* cmd){
     udp.write((const uint8_t*)cmd, strlen(cmd));
     udp.endPacket();
 
-    while (1) {
+    while(1){
         int packetSize = udp.parsePacket();
         if (packetSize){
             String resp;
@@ -75,24 +118,16 @@ String send_cmd_sync(const char* cmd){
 /* End helper functions --------------------------------------------------------------------------------------------------------- */
 
 /* Tasks------------------------------------------------------------------------------------------------------------------------- */
-/* Task to read status of Tello and measurements from all external sensors */
+
+/* Task to read Tello's state and measurements from all external sensors */
 void sensor_read(void* params){
     uint16_t error;
     char errorMessage[256];
     
-    writeFile(LittleFS, file_name, "Time,Battery,Tello TOF,CO2,Temperature,Humidity");
+    writeFile(LittleFS, file_name, "Motor Time (s),Battery (%),Absolute Height (Tello TOF) (cm),CO2 (ppm),Temperature (C),Relative Humidity (%)");
     Serial.printf("sensor_read running on core %d\n", xPortGetCoreID());
 
     while(1){
-        
-        String tello_tof, battery, time = "";
-        /* Read status from Tello */
-        /* TODO: does not work after landing, blocks sensors from reading. Maybe attempt to reconnect to tello after landing (add reconnection functionality to send_cmd_sync?) */
-        /* TODO: request Tello state from the ohter port since udp messages seem to be colliding*/
-        Serial.println("Tello: " + (tello_tof = send_cmd_sync("tof?")));
-        Serial.println("Tello: " + (battery = send_cmd_sync("battery?")) + "%");
-        Serial.println("Tello: " + (time = send_cmd_sync("time?")));
-
         /* Read SCD4x measurements */
         uint16_t co2;
         float temp, humd;
@@ -120,16 +155,48 @@ void sensor_read(void* params){
             //Serial.printf("SCD4x: CO2: %d, Temperature: %.2f, Humidity: %.2f\n", co2, temp, humd);
         }
 
-        // Add current time and/or time drone spent online?
-        String line = "\n" + time  + "," + battery + "," + tello_tof + "," + String(co2) + "," + String(temp, 2) + "," + String(humd, 2);
-
-        char buf[line.length()];
-        line.toCharArray(buf, line.length());
-
-        appendFile(LittleFS, file_name, buf);
-        //readFile(LittleFS, file_name);
+        // TODO: Add current time as known by ESP32
+        String line = "\n" + String(tello_state.time)  + "," + String(tello_state.bat) + "," + String(tello_state.tof) + "," + String(co2) + "," + String(temp, 2) + "," + String(humd, 2);
+        appendFile(LittleFS, file_name, line.c_str());
+        Serial.println(line);
 
         delay(1000);
+    }
+    vTaskDelete(NULL);
+}
+
+/* Task to continiously update tello_state every 10ms in the background */
+void update_state(void* params){
+    while(1){
+        /* Grab the first packet that comes in */
+        int packetSize = state_server.parsePacket();
+        if (packetSize) {
+            String state;
+            /* Parse data into state */
+            while (state_server.available()) {
+                char c = state_server.read();
+                if(c == '\n' || c == '\r'|| c == '\0'){
+                    continue;
+                }
+                state += c;
+            }
+          
+            /* Parse the state string
+             * Format: "pitch:%d;roll:%d;yaw:%d;vgx:%d;vgy%d;vgz:%d;templ:%d;temph:%d;tof:%d;h:%d;bat:%d;baro:%.2f;time:%d;agx:%.2f;agy:%.2f;agz:%.2f;\r\n"
+             * The code loops through all 16 states, shifting the substring start index along as it 
+             * hits each data point between the colon and semicolon
+             */
+            int start_ind = 0;
+            int end_ind = 0;
+            float vals[tello_state.num_vals];
+            for(int i = 0; i < tello_state.num_vals; ++i){
+                start_ind = state.indexOf(':', start_ind) + 1;
+                end_ind = state.indexOf(';', start_ind);
+                vals[i] = state.substring(start_ind, end_ind).toFloat();
+            }
+            tello_state.update_values(vals);
+        }
+        delay(10);
     }
     vTaskDelete(NULL);
 }
@@ -163,6 +230,8 @@ void drone_ctrl(void* params){
 }
 
 /* End tasks--------------------------------------------------------------------------------------------------------------------- */
+
+/* Begin setup  ------------------------------------------------------------------------------------------------------------------*/
 
 void setup() {
     Serial.begin(115200);   
@@ -204,17 +273,19 @@ void setup() {
 
     /* Initialise connection to Tello, enable SDK mode */
     //TODO: Split off into its own function?
-    initConnection();
+    init_connection();
     String resp = send_cmd_sync("command");
     if(!resp.equalsIgnoreCase("ok")){
         Serial.println("Error enabling SDK mode.");
     }
+    else{
+        Serial.println("Successfully entered SDK mode.");
+    }
 
     /* Create perpetual sensor reading & flight path task*/
-    xTaskCreatePinnedToCore(sensor_read, "sensor_read", 10000, NULL, 1, &sensor_read_t, 0);
-    xTaskCreatePinnedToCore(drone_ctrl, "drone_ctrl", 10000, NULL, 1, &drone_ctrl_t, 1);
+    xTaskCreatePinnedToCore(sensor_read, "sensor_read", 10000, NULL, 4, &sensor_read_t, 0);
+    xTaskCreatePinnedToCore(update_state, "update_state", 10000, NULL, 2, &update_state_t, 0);
+    xTaskCreatePinnedToCore(drone_ctrl, "drone_ctrl", 10000, NULL, 8, &drone_ctrl_t, 1);
 }
 
-void loop() {
-    /* Unused */
-}
+void loop(){}
