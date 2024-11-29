@@ -1,4 +1,5 @@
-/* Main implementation file for flying the drone & logging sensor data
+/* EcoDrone: Autonomous Environmental Monitoring
+ * Main implementation file for flying the drone & logging sensor data
  * Author: Brandon Lee, brandon.kf.lee@gmail.com
  * Code partially derived from Sensirion AG (SCD4x)
  */ 
@@ -9,10 +10,13 @@
 #include <WiFiUdp.h>
 #include <SensirionI2CScd4x.h>
 
+#include "littlefs_io.hpp"
+
 const char* ssid = "TELLO-F1AFF9";
 const char* tello_ip = "192.168.10.1";
 const int control_port = 8889; /* Port to send commands (control, set, read) */
 const int status_port = 8890; /* (Unused) port to recieve Tello status */
+const char* file_name = "/data1.csv"; /* TODO: hard coded for now, fine a way to change the name every time the program is run */
 
 int connected;
 WiFiUDP udp;
@@ -42,7 +46,7 @@ void initConnection() {
     Serial.println(WiFi.localIP()); //192.168.10.2
 }
 
-
+/* TODO: lots of error checking. reference djitellopy and their implementation for what to look out for */
 /* Send a synchronous command to drone (wait for and display response) */
 String send_cmd_sync(const char* cmd){
     
@@ -76,19 +80,24 @@ void sensor_read(void* params){
     uint16_t error;
     char errorMessage[256];
     
+    writeFile(LittleFS, file_name, "Time,Battery,Tello TOF,CO2,Temperature,Humidity");
     Serial.printf("sensor_read running on core %d\n", xPortGetCoreID());
 
     while(1){
+        
+        String tello_tof, battery, time = "";
         /* Read status from Tello */
-        Serial.println("Tello: " + send_cmd_sync("tof?"));
-        Serial.println("Tello: " + send_cmd_sync("battery?") + "%");
+        /* TODO: does not work after landing, blocks sensors from reading. Maybe attempt to reconnect to tello after landing (add reconnection functionality to send_cmd_sync?) */
+        /* TODO: request Tello state from the ohter port since udp messages seem to be colliding*/
+        Serial.println("Tello: " + (tello_tof = send_cmd_sync("tof?")));
+        Serial.println("Tello: " + (battery = send_cmd_sync("battery?")) + "%");
+        Serial.println("Tello: " + (time = send_cmd_sync("time?")));
 
         /* Read SCD4x measurements */
         uint16_t co2;
         float temp, humd;
         error = scd4x.readMeasurement(co2, temp, humd);
 
-        /* Get lower byte */
         if(error){
             /* Print out error message unless it is "NotEnoughDataError". We are polling data every second, but the SCD4x isn't ready until 5 seconds, so ignore those messages.
                Grab lower byte since NotEnoughDataError is a low level error (see SensirionErrors.cpp) */
@@ -97,16 +106,32 @@ void sensor_read(void* params){
                 errorToString(error, errorMessage, 256);
                 Serial.println(errorMessage);            
             }
+            else{
+                /* Zero out variables to write into file */
+                co2 = 0;
+                temp = 0.0;
+                humd = 0;
+            }
         }
         else if (co2 == 0){
             Serial.println("SCD4x: Invalid sample detected, skipping.");
         }
         else{
-            Serial.printf("SCD4x: CO2: %d, Temperature: %.2f, Humidity: %.2f\n", co2, temp, humd);
+            //Serial.printf("SCD4x: CO2: %d, Temperature: %.2f, Humidity: %.2f\n", co2, temp, humd);
         }
+
+        // Add current time and/or time drone spent online?
+        String line = "\n" + time  + "," + battery + "," + tello_tof + "," + String(co2) + "," + String(temp, 2) + "," + String(humd, 2);
+
+        char buf[line.length()];
+        line.toCharArray(buf, line.length());
+
+        appendFile(LittleFS, file_name, buf);
+        //readFile(LittleFS, file_name);
 
         delay(1000);
     }
+    vTaskDelete(NULL);
 }
 
 /* Task to control drone movements */
@@ -124,10 +149,17 @@ void drone_ctrl(void* params){
 
 
     Serial.println("Resp: " + send_cmd_sync("takeoff"));
-    delay(1000);
+    delay(3000);
     Serial.println("Resp: " + send_cmd_sync("land"));
 
     digitalWrite(LED_BUILTIN, LOW);
+
+
+    readFile(LittleFS, file_name);
+
+    //TODO: Start advertising bluetooth connection, flash neopixel led blue?
+
+    vTaskDelete(NULL);
 }
 
 /* End tasks--------------------------------------------------------------------------------------------------------------------- */
@@ -162,12 +194,24 @@ void setup() {
         Serial.println(errorMessage);
     }
 
+    /* Initialise file system & file to write into */
+    /* TODO: Using LittleFS library, but partition label is ffat, strange */
+    /* TODO: move using LittleFS.begin into littlefs_io library, possibly make it a class */
+    if (!LittleFS.begin(true, "/littlefs", 10, "ffat")){
+        Serial.println("An Error has occurred while mounting LittleFS");
+        return;
+    }
+
     /* Initialise connection to Tello, enable SDK mode */
+    //TODO: Split off into its own function?
     initConnection();
-    Serial.println("Resp: " + send_cmd_sync("command"));
+    String resp = send_cmd_sync("command");
+    if(!resp.equalsIgnoreCase("ok")){
+        Serial.println("Error enabling SDK mode.");
+    }
 
     /* Create perpetual sensor reading & flight path task*/
-    //xTaskCreatePinnedToCore(sensor_read, "sensor_read", 10000, NULL, 1, &sensor_read_t, 0);
+    xTaskCreatePinnedToCore(sensor_read, "sensor_read", 10000, NULL, 1, &sensor_read_t, 0);
     xTaskCreatePinnedToCore(drone_ctrl, "drone_ctrl", 10000, NULL, 1, &drone_ctrl_t, 1);
 }
 
