@@ -8,6 +8,7 @@
 #include <Wire.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include <BleSerial.h>
 #include <SensirionI2CScd4x.h>
 
 #include "littlefs_io.hpp"
@@ -18,9 +19,9 @@ const int control_port = 8889; /* Port to send commands (control, set, read) */
 const int state_port = 8890; /* Port to recieve Tello state */
 const char* file_name = "/data1.csv"; /* TODO: hard coded for now, fine a way to change the name every time the program is run */
 
-int connected;
 WiFiUDP udp;
 WiFiUDP state_server;
+BleSerial ble;
 
 /* TODO: split off tello functions into its own file */
 class TelloState{
@@ -73,7 +74,8 @@ TaskHandle_t drone_ctrl_t;
 
 /* Initialise connection from ESP32 to Tello */
 void init_connection() {
-    //Initialise in station mode, disconnect from any previous connections, and begin a connection to the specified Tello's ssid 
+   int connected;
+   //Initialise in station mode, disconnect from any previous connections, and begin a connection to the specified Tello's ssid 
     WiFi.mode(WIFI_STA);
     WiFi.disconnect(true);
     WiFi.begin(ssid);
@@ -205,26 +207,32 @@ void update_state(void* params){
 void drone_ctrl(void* params){
     Serial.printf("drone_ctrl running on core %d\n", xPortGetCoreID());
 
-    /* Blink red LED 3 times before takeoff */
-    for(int i = 0; i < 2; ++i){
-        digitalWrite(LED_BUILTIN, HIGH);
-        delay(500);
-        digitalWrite(LED_BUILTIN, LOW);
-        delay(500);
+    ble.begin("EcoDrone");
+    while(1){
+        String msg = "sensor data here!";
+        ble.write((const uint8_t*)msg.c_str(), msg.length());
+        delay(1000);
     }
-    digitalWrite(LED_BUILTIN, HIGH);
+
+    // /* Blink red LED 3 times before takeoff */
+    // for(int i = 0; i < 2; ++i){
+    //     digitalWrite(LED_BUILTIN, HIGH);
+    //     delay(500);
+    //     digitalWrite(LED_BUILTIN, LOW);
+    //     delay(500);
+    // }
+    // digitalWrite(LED_BUILTIN, HIGH);
 
 
-    Serial.println("Resp: " + send_cmd_sync("takeoff"));
-    delay(3000);
-    Serial.println("Resp: " + send_cmd_sync("land"));
+    // Serial.println("Resp: " + send_cmd_sync("takeoff"));
+    // delay(3000);
+    // Serial.println("Resp: " + send_cmd_sync("land"));
 
-    digitalWrite(LED_BUILTIN, LOW);
-
-
-    readFile(LittleFS, file_name);
+    // digitalWrite(LED_BUILTIN, LOW);
 
     //TODO: Start advertising bluetooth connection, flash neopixel led blue?
+    /* Read each byte from the file into a string (look inside how readFile is implemented), then broadcast that string over bluetooth
+       a device will recieve that message, decode it, and write it out to a .csv file. Write out the name too?*/
 
     vTaskDelete(NULL);
 }
@@ -283,8 +291,8 @@ void setup() {
     }
 
     /* Create perpetual sensor reading & flight path task*/
-    xTaskCreatePinnedToCore(sensor_read, "sensor_read", 10000, NULL, 4, &sensor_read_t, 0);
-    xTaskCreatePinnedToCore(update_state, "update_state", 10000, NULL, 2, &update_state_t, 0);
+    // xTaskCreatePinnedToCore(sensor_read, "sensor_read", 10000, NULL, 4, &sensor_read_t, 0);
+    // xTaskCreatePinnedToCore(update_state, "update_state", 10000, NULL, 2, &update_state_t, 0);
     xTaskCreatePinnedToCore(drone_ctrl, "drone_ctrl", 10000, NULL, 8, &drone_ctrl_t, 1);
 }
 
