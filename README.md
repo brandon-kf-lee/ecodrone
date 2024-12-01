@@ -17,6 +17,10 @@ The Tello drone implements an SDK that allows external devices to communicate wi
 * (Tentative) Continuously broadcast a BLE connection during runtime, used for reporting sensor data (not intended to be connected to until flight completion)
 * (Tentative) After the drone lands, bring an external computer to connect to the ESP32 through Bluetooth LE, and transmit data from the ESP32 to the computer
 
+## Dependencies
+* Python
+    * [bleak](https://github.com/hbldh/bleak): Used to connect an external device to the ESP32 through the BLE (Bluetooth Low Energy) module for communication
+
 ## Hardware Used
 
 * [DJI Tello](https://www.ryzerobotics.com/tello)
