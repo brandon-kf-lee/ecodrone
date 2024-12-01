@@ -9,6 +9,8 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <BleSerial.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BMP3XX.h>
 #include <SensirionI2CScd4x.h>
 
 #include "littlefs_io.hpp"
@@ -64,6 +66,9 @@ class TelloState{
 TelloState tello_state;
 
 SensirionI2CScd4x scd4x;
+Adafruit_BMP3XX bmp;
+
+#define SEALEVELPRESSURE_HPA 1013.25
 
 TaskHandle_t sensor_read_t;
 TaskHandle_t update_state_t;
@@ -126,15 +131,16 @@ void sensor_read(void* params){
     uint16_t error;
     char errorMessage[256];
     
-    writeFile(LittleFS, file_name, "Motor Time (s),Battery (%),Absolute Height (Tello TOF) (cm),CO2 (ppm),Temperature (C),Relative Humidity (%)");
+    writeFile(LittleFS, file_name, "Motor Time (s),Battery (%),Absolute Height (Tello TOF) (cm),CO2 (ppm),Temperature (SCD4x)(C),Temperature (BMP3xx)(C),Relative Humidity (%),Pressure (hPa),Approx. Altitude (m)");
     Serial.printf("sensor_read running on core %d\n", xPortGetCoreID());
 
     while(1){
-        /* Read SCD4x measurements */
         uint16_t co2;
-        float temp, humd;
-        error = scd4x.readMeasurement(co2, temp, humd);
+        float scd_temp, humd, alt;
+        double bmp_temp, pres;
 
+        /* Read SCD4x measurements */
+        error = scd4x.readMeasurement(co2, scd_temp, humd);
         if(error){
             /* Print out error message unless it is "NotEnoughDataError". We are polling data every second, but the SCD4x isn't ready until 5 seconds, so ignore those messages.
                Grab lower byte since NotEnoughDataError is a low level error (see SensirionErrors.cpp) */
@@ -146,7 +152,7 @@ void sensor_read(void* params){
             else{
                 /* Zero out variables to write into file */
                 co2 = 0;
-                temp = 0.0;
+                scd_temp = 0.0;
                 humd = 0;
             }
         }
@@ -154,13 +160,25 @@ void sensor_read(void* params){
             Serial.println("SCD4x: Invalid sample detected, skipping.");
         }
         else{
-            //Serial.printf("SCD4x: CO2: %d, Temperature: %.2f, Humidity: %.2f\n", co2, temp, humd);
+            Serial.printf("SCD4x: CO2: %d ppm, Temperature: %.2f C, Humidity: %.2f%%\n", co2, scd_temp, humd);
+        }
+
+        if(!bmp.performReading()) {
+            Serial.println("BMP3xx: Failed to perform reading.");
+        }else{
+            bmp_temp = bmp.temperature;
+            pres = (bmp.pressure / 100.0);
+            alt = bmp.readAltitude(SEALEVELPRESSURE_HPA);
+            Serial.printf("BMP3xx: Temperature: %.2f C, Pressure: %.2f hPa, Approx. Altitude: %.2f m\n", bmp_temp, pres, alt);
         }
 
         // TODO: Add current time as known by ESP32
-        String line = "\n" + String(tello_state.time)  + "," + String(tello_state.bat) + "," + String(tello_state.tof) + "," + String(co2) + "," + String(temp, 2) + "," + String(humd, 2);
+        String line = "\n" + String(tello_state.time) + "," + String(tello_state.bat) + "," + String(tello_state.tof) + "," + String(co2) + "," + String(scd_temp, 2) + "," + String(bmp_temp, 2) + "," + String(humd, 2) + "," + String(pres, 2) + "," + String(alt, 2);
         appendFile(LittleFS, file_name, line.c_str());
-        Serial.println(line);
+        
+        Serial.printf("Tello Battery: %d\n", tello_state.bat);
+        //TODO: use neopixel to flash battery life?
+        //Serial.println(line);
 
         delay(1000);
     }
@@ -207,13 +225,6 @@ void update_state(void* params){
 void drone_ctrl(void* params){
     Serial.printf("drone_ctrl running on core %d\n", xPortGetCoreID());
 
-    ble.begin("EcoDrone");
-    while(1){
-        String msg = "sensor data here!";
-        ble.write((const uint8_t*)msg.c_str(), msg.length());
-        delay(1000);
-    }
-
     // /* Blink red LED 3 times before takeoff */
     // for(int i = 0; i < 2; ++i){
     //     digitalWrite(LED_BUILTIN, HIGH);
@@ -233,6 +244,24 @@ void drone_ctrl(void* params){
     //TODO: Start advertising bluetooth connection, flash neopixel led blue?
     /* Read each byte from the file into a string (look inside how readFile is implemented), then broadcast that string over bluetooth
        a device will recieve that message, decode it, and write it out to a .csv file. Write out the name too?*/
+
+    //delay(10000);
+    Serial.println("Sending sensor data");
+
+    /* TODO: big problems with this system; may need to break up string into chunks. if the file is too large, may not be able to send data in one chunk */
+    ble.begin("EcoDrone");
+    while(1){
+        //String msg = readFile(LittleFS, file_name);
+        String msg = "sensor data here!!!12345";
+        if(msg.isEmpty()){
+            Serial.println("Data read error");
+            //break;
+        }
+        else{
+            ble.write((const uint8_t*)msg.c_str(), msg.length());
+        }
+        delay(1000);    
+    }
 
     vTaskDelete(NULL);
 }
@@ -271,6 +300,20 @@ void setup() {
         Serial.println(errorMessage);
     }
 
+    /* Initialise Bosch BMP3xx 
+     * hardware I2C mode, can pass in address & alt Wire */
+    if (!bmp.begin_I2C()) {   
+        Serial.println("Could not find a valid BMP3 sensor, check wiring!");
+        return;
+    }
+
+    /* Set up oversampling and filter initialization */
+    bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
+    bmp.setPressureOversampling(BMP3_OVERSAMPLING_4X);
+    bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
+    bmp.setOutputDataRate(BMP3_ODR_50_HZ);
+
+
     /* Initialise file system & file to write into */
     /* TODO: Using LittleFS library, but partition label is ffat, strange */
     /* TODO: move using LittleFS.begin into littlefs_io library, possibly make it a class */
@@ -291,8 +334,8 @@ void setup() {
     }
 
     /* Create perpetual sensor reading & flight path task*/
-    // xTaskCreatePinnedToCore(sensor_read, "sensor_read", 10000, NULL, 4, &sensor_read_t, 0);
-    // xTaskCreatePinnedToCore(update_state, "update_state", 10000, NULL, 2, &update_state_t, 0);
+    xTaskCreatePinnedToCore(sensor_read, "sensor_read", 10000, NULL, 4, &sensor_read_t, 0);
+    xTaskCreatePinnedToCore(update_state, "update_state", 10000, NULL, 2, &update_state_t, 0);
     xTaskCreatePinnedToCore(drone_ctrl, "drone_ctrl", 10000, NULL, 8, &drone_ctrl_t, 1);
 }
 
