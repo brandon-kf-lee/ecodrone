@@ -40,10 +40,11 @@ async def main():
                             value = await client.read_gatt_char(char.uuid)
                         except Exception as e:
                             value = "Error: {e}"
-                    else:
-                        value = "No value"
 
-                    print(value.decode("utf-8"))
+                    if not value:
+                        print("No value")
+                    else:
+                        print(value.decode("utf-8"))
 
         print("Disconnecting...", end=" ", flush=True)
     print("Disconnected")
