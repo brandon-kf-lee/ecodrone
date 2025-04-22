@@ -151,6 +151,7 @@ void sensor_read(void* params){
             }
             else{
                 /* Zero out variables to write into file */
+                /* TODO: set to -1, and if it is -1, don't put it in the "line" variable? */
                 co2 = 0;
                 scd_temp = 0.0;
                 humd = 0;
@@ -172,11 +173,11 @@ void sensor_read(void* params){
             Serial.printf("BMP3xx: Temperature: %.2f C, Pressure: %.2f hPa, Approx. Altitude: %.2f m\n", bmp_temp, pres, alt);
         }
 
-        // TODO: Add current time as known by ESP32
+        // TODO: Add current time as known by ESP32, relative height as reported by Tello
         String line = "\n" + String(tello_state.time) + "," + String(tello_state.bat) + "," + String(tello_state.tof) + "," + String(co2) + "," + String(scd_temp, 2) + "," + String(bmp_temp, 2) + "," + String(humd, 2) + "," + String(pres, 2) + "," + String(alt, 2);
         appendFile(LittleFS, file_name, line.c_str());
         
-        Serial.printf("Tello Battery: %d\n", tello_state.bat);
+        //Serial.printf("Tello Battery: %d\n", tello_state.bat);
         //TODO: use neopixel to flash battery life?
         //Serial.println(line);
 
@@ -225,43 +226,47 @@ void update_state(void* params){
 void drone_ctrl(void* params){
     Serial.printf("drone_ctrl running on core %d\n", xPortGetCoreID());
 
-    // /* Blink red LED 3 times before takeoff */
-    // for(int i = 0; i < 2; ++i){
-    //     digitalWrite(LED_BUILTIN, HIGH);
-    //     delay(500);
-    //     digitalWrite(LED_BUILTIN, LOW);
-    //     delay(500);
-    // }
-    // digitalWrite(LED_BUILTIN, HIGH);
+    /* Blink red LED 3 times before takeoff */
+    for(int i = 0; i < 2; ++i){
+        digitalWrite(LED_BUILTIN, HIGH);
+        delay(500);
+        digitalWrite(LED_BUILTIN, LOW);
+        delay(500);
+    }
+    digitalWrite(LED_BUILTIN, HIGH);
 
 
-    // Serial.println("Resp: " + send_cmd_sync("takeoff"));
-    // delay(3000);
-    // Serial.println("Resp: " + send_cmd_sync("land"));
+    Serial.println("Resp: " + send_cmd_sync("takeoff"));
 
-    // digitalWrite(LED_BUILTIN, LOW);
+    Serial.println("Resp: " + send_cmd_sync("forward 50"));
+    Serial.println("Resp: " + send_cmd_sync("back 50"));
+
+    Serial.println("Resp: " + send_cmd_sync("land"));
+
+
+    digitalWrite(LED_BUILTIN, LOW);
 
     //TODO: Start advertising bluetooth connection, flash neopixel led blue?
     /* Read each byte from the file into a string (look inside how readFile is implemented), then broadcast that string over bluetooth
        a device will recieve that message, decode it, and write it out to a .csv file. Write out the name too?*/
 
     //delay(10000);
-    Serial.println("Sending sensor data");
+    // Serial.println("Sending sensor data");
 
-    /* TODO: big problems with this system; may need to break up string into chunks. if the file is too large, may not be able to send data in one chunk */
-    ble.begin("EcoDrone");
-    while(1){
-        //String msg = readFile(LittleFS, file_name);
-        String msg = "sensor data here!!!12345";
-        if(msg.isEmpty()){
-            Serial.println("Data read error");
-            //break;
-        }
-        else{
-            ble.write((const uint8_t*)msg.c_str(), msg.length());
-        }
-        delay(1000);    
-    }
+    // /* TODO: big problems with this system; may need to break up string into chunks. if the file is too large, may not be able to send data in one chunk */
+    // ble.begin("EcoDrone");
+    // while(1){
+    //     //String msg = readFile(LittleFS, file_name);
+    //     String msg = "sensor data here!!!12345";
+    //     if(msg.isEmpty()){
+    //         Serial.println("Data read error");
+    //         //break;
+    //     }
+    //     else{
+    //         ble.write((const uint8_t*)msg.c_str(), msg.length());
+    //     }
+    //     delay(1000);    
+    // }
 
     vTaskDelete(NULL);
 }
@@ -272,9 +277,9 @@ void drone_ctrl(void* params){
 
 void setup() {
     Serial.begin(115200);   
-    while (!Serial){
-        delay(10);
-    }
+    // while (!Serial){
+    //     delay(10);
+    // }
 
     pinMode(LED_BUILTIN, OUTPUT);
 
@@ -339,4 +344,10 @@ void setup() {
     xTaskCreatePinnedToCore(drone_ctrl, "drone_ctrl", 10000, NULL, 8, &drone_ctrl_t, 1);
 }
 
-void loop(){}
+void loop(){
+    if(Serial){
+        readFile(LittleFS, file_name);
+        //Serial.printf("\n\nString data: %s\n\n", data);
+        delay(5000);
+    }
+}

@@ -76,7 +76,7 @@ String readFile(fs::FS &fs, const char *path) {
   while (file.available()) {
     int c = file.read();
     Serial.write(c);
-    data.concat(c);
+    data.concat((char)c);
   }
   file.close();
   return data;
