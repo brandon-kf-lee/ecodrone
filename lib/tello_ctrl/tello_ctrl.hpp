@@ -1,5 +1,5 @@
 /* EcoDrone: Autonomous Environmental Monitoring
- * Header file for controlling the DJI Tello. Contains the TelloState and TelloControl classes.
+ * Header file for controlling the DJI Tello, contains the TelloState and TelloControl classes
  * Author: Brandon Lee, brandon.kf.lee@gmail.com
 */ 
 
