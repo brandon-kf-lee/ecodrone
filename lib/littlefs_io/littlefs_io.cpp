@@ -64,7 +64,7 @@ void removeDir(fs::FS &fs, const char *path) {
 
 String readFile(fs::FS &fs, const char *path) {
   String data;
-  Serial.printf("Reading file: %s\r\n", path);
+  //Serial.printf("Reading file: %s\r\n", path);
 
   File file = fs.open(path);
   if (!file || file.isDirectory()) {
@@ -72,10 +72,10 @@ String readFile(fs::FS &fs, const char *path) {
     return data;
   }
 
-  Serial.println("- read from file:");
+  //Serial.println("- read from file:");
   while (file.available()) {
     int c = file.read();
-    Serial.write(c);
+    //Serial.write(c);
     data.concat((char)c);
   }
   file.close();
@@ -99,7 +99,7 @@ void writeFile(fs::FS &fs, const char *path, const char *message) {
 }
 
 void appendFile(fs::FS &fs, const char *path, const char *message) {
-  Serial.printf("Appending to file: %s\r\n", path);
+  //Serial.printf("Appending to file: %s\r\n", path);
 
   File file = fs.open(path, FILE_APPEND);
   if (!file) {
@@ -107,7 +107,7 @@ void appendFile(fs::FS &fs, const char *path, const char *message) {
     return;
   }
   if (file.print(message)) {
-    Serial.println("- message appended");
+    //Serial.println("- message appended");
   } else {
     Serial.println("- append failed");
   }
