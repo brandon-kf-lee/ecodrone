@@ -8,72 +8,27 @@
 #include <Wire.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
-#include <BleSerial.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BMP3XX.h>
+#include <Adafruit_NeoPixel.h>
 #include <SensirionI2CScd4x.h>
 
 #include "littlefs_io.hpp"
+#include "tello_ctrl.hpp"
+#include "ble_comms.hpp"
 
-const char* ssid = "TELLO-F1AFF9";
-const char* tello_ip = "192.168.10.1";
-const int control_port = 8889; /* Port to send commands (control, set, read) */
-const int state_port = 8890; /* Port to recieve Tello state */
-const char* file_name = "/data1.csv"; /* TODO: hard coded for now, fine a way to change the name every time the program is run */
+#define SEALEVELPRESSURE_HPA 1013.25
 
-WiFiUDP udp;
-WiFiUDP state_server;
-BleSerial ble;
-
-/* TODO: split off tello functions into its own file */
-class TelloState{
-    public: 
-        TelloState(){
-            num_vals = 16;
-        }
-
-        void update_values(float vals[16]){
-            pitch = vals[0];
-            roll = vals[1];
-            yaw = vals[2];
-            vgx = vals[3];
-            vgy = vals[4];
-            vgz = vals[5];
-            templ = vals[6];
-            temph = vals[7];
-            tof = vals[8];
-            h = vals[9];
-            bat = vals[10];
-            baro = vals[11];
-            time = vals[12];
-            agx = vals[13];
-            agy = vals[14];
-            agz = vals[15];
-        }
-        
-        int num_vals; /* Total number of state values */
-        int pitch, roll, yaw; /* Drone orientation, in degrees*/
-        int vgx, vgy, vgz; /* Speed in x, y, z directions */
-        int templ, temph; /* Lowest and highest temperature, in celcius */
-        int tof; /* Time of flight distance sensor measurement, mounted below the drone, in cm, */
-        int h; /* Relative height, in cm */
-        int bat; /* Battery level, in % */
-        float baro; /* Barometer measurement, in cm */
-        int time; /* Time since motor on, in s */
-        float agx, agy, agz; /* Acceleration in x, y, z directions */
-};
-
-TelloState tello_state;
+TelloControl tello;
 
 SensirionI2CScd4x scd4x;
 Adafruit_BMP3XX bmp;
-
-#define SEALEVELPRESSURE_HPA 1013.25
 
 TaskHandle_t sensor_read_t;
 TaskHandle_t update_state_t;
 TaskHandle_t drone_ctrl_t;
 
+const char* file_name = "/data1.csv"; /* TODO: hard coded for now, fine a way to change the name every time the program is run */
 
 /* Helper functions --------------------------------------------------------------------------------------------------------- */
 
@@ -83,45 +38,54 @@ void init_connection() {
    //Initialise in station mode, disconnect from any previous connections, and begin a connection to the specified Tello's ssid 
     WiFi.mode(WIFI_STA);
     WiFi.disconnect(true);
-    WiFi.begin(ssid);
-    Serial.printf("Connecting to %s ..", ssid);
+    WiFi.begin(tello.ssid);
+    Serial.printf("Connecting to %s ..", tello.ssid);
     while ((connected = WiFi.status()) != WL_CONNECTED) {
       Serial.print('.');
       delay(1000);
     }
-    Serial.printf("%s connected.\n", ssid);
 
     //Bind to Tello control & state port
-    udp.begin(WiFi.localIP(), control_port);
-    state_server.begin(state_port);
+    tello.bindPorts(WiFi.localIP());
+    Serial.printf("%s connected.\n", tello.ssid);
 }
 
-/* TODO: lots of error checking. reference djitellopy and their implementation for what to look out for */
-/* Send a synchronous command to drone (wait for and display response) */
-String send_cmd_sync(const char* cmd){
+/* Read stored sensor data from flash and send it to a device over Bluetooth Low Energy (BLE)
+   A device will recieve that message, decode it, and write it out to a .csv file. 
+   Returns -1 if flash is empty/cannot be read 
+   Returns -2 if the BLE device has disconnected 
+*/
+int sendDataOverBLE(){
+    /* Initialise and turn on built-in Neopixel to blue*/
+    Adafruit_NeoPixel pixels(1, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
+    pixels.begin();
+    pixels.setBrightness(50);
+    pixels.fill(pixels.Color(0, 0, 255));  // R, G, B (0-255)
+    pixels.show();
+
+    /* Initialise BLE server */
+    initBLE("EcoDrone_Data");
+
+    /* Wait for drone connection task signal from ble_comms before reading from flash and writing data to BLE characteristic */
+    Serial.println("Waiting for BLE connection...");
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    Serial.println("BLE client connected. Proceeding to write...");
     
-    Serial.printf("Sending message \"%s\"... ", cmd);
-
-    udp.beginPacket(tello_ip, control_port);
-    udp.write((const uint8_t*)cmd, strlen(cmd));
-    udp.endPacket();
-
-    while(1){
-        int packetSize = udp.parsePacket();
-        if (packetSize){
-            String resp;
-            while (udp.available()) {
-                char c = udp.read();
-                if(c == '\n' || c == '\r'|| c == '\0'){
-                    continue;
-                }
-                resp += c;
-            }
-            return resp;
-        } 
+    String msg = readFile(LittleFS, file_name);
+    if(msg.isEmpty()){
+        Serial.print("Unable to read from flash.");
+        return -1;
     }
+    if(!writeData(msg)){
+        Serial.print("Unable to write over BLE.");
+        return -2;
+    }
+    Serial.println("Data successfully written.");
+    pixels.fill(pixels.Color(0, 0, 0));
+    pixels.show();
+    
+    return 1;
 }
-
 /* End helper functions --------------------------------------------------------------------------------------------------------- */
 
 /* Tasks------------------------------------------------------------------------------------------------------------------------- */
@@ -145,9 +109,9 @@ void sensor_read(void* params){
             /* Print out error message unless it is "NotEnoughDataError". We are polling data every second, but the SCD4x isn't ready until 5 seconds, so ignore those messages.
                Grab lower byte since NotEnoughDataError is a low level error (see SensirionErrors.cpp) */
             if ((error & 0x00FF) != NotEnoughDataError){
-                Serial.print("SCD4x: Error trying to execute readMeasurement(): ");
+                //Serial.print("SCD4x: Error trying to execute readMeasurement(): ");
                 errorToString(error, errorMessage, 256);
-                Serial.println(errorMessage);            
+                //Serial.println(errorMessage);            
             }
             else{
                 /* Zero out variables to write into file */
@@ -158,23 +122,23 @@ void sensor_read(void* params){
             }
         }
         else if (co2 == 0){
-            Serial.println("SCD4x: Invalid sample detected, skipping.");
+            //Serial.println("SCD4x: Invalid sample detected, skipping.");
         }
         else{
-            Serial.printf("SCD4x: CO2: %d ppm, Temperature: %.2f C, Humidity: %.2f%%\n", co2, scd_temp, humd);
+            //Serial.printf("SCD4x: CO2: %d ppm, Temperature: %.2f C, Humidity: %.2f%%\n", co2, scd_temp, humd);
         }
 
         if(!bmp.performReading()) {
-            Serial.println("BMP3xx: Failed to perform reading.");
+            //Serial.println("BMP3xx: Failed to perform reading.");
         }else{
             bmp_temp = bmp.temperature;
             pres = (bmp.pressure / 100.0);
             alt = bmp.readAltitude(SEALEVELPRESSURE_HPA);
-            Serial.printf("BMP3xx: Temperature: %.2f C, Pressure: %.2f hPa, Approx. Altitude: %.2f m\n", bmp_temp, pres, alt);
+            //Serial.printf("BMP3xx: Temperature: %.2f C, Pressure: %.2f hPa, Approx. Altitude: %.2f m\n", bmp_temp, pres, alt);
         }
 
         // TODO: Add current time as known by ESP32, relative height as reported by Tello
-        String line = "\n" + String(tello_state.time) + "," + String(tello_state.bat) + "," + String(tello_state.tof) + "," + String(co2) + "," + String(scd_temp, 2) + "," + String(bmp_temp, 2) + "," + String(humd, 2) + "," + String(pres, 2) + "," + String(alt, 2);
+        String line = "\n" + String(tello.state.time) + "," + String(tello.state.bat) + "," + String(tello.state.tof) + "," + String(co2) + "," + String(scd_temp, 2) + "," + String(bmp_temp, 2) + "," + String(humd, 2) + "," + String(pres, 2) + "," + String(alt, 2);
         appendFile(LittleFS, file_name, line.c_str());
         
         //Serial.printf("Tello Battery: %d\n", tello_state.bat);
@@ -190,12 +154,12 @@ void sensor_read(void* params){
 void update_state(void* params){
     while(1){
         /* Grab the first packet that comes in */
-        int packetSize = state_server.parsePacket();
+        int packetSize = tello.state_server.parsePacket();
         if (packetSize) {
             String state;
             /* Parse data into state */
-            while (state_server.available()) {
-                char c = state_server.read();
+            while (tello.state_server.available()) {
+                char c = tello.state_server.read();
                 if(c == '\n' || c == '\r'|| c == '\0'){
                     continue;
                 }
@@ -209,13 +173,13 @@ void update_state(void* params){
              */
             int start_ind = 0;
             int end_ind = 0;
-            float vals[tello_state.num_vals];
-            for(int i = 0; i < tello_state.num_vals; ++i){
+            float vals[tello.state.num_vals];
+            for(int i = 0; i < tello.state.num_vals; ++i){
                 start_ind = state.indexOf(':', start_ind) + 1;
                 end_ind = state.indexOf(';', start_ind);
                 vals[i] = state.substring(start_ind, end_ind).toFloat();
             }
-            tello_state.update_values(vals);
+            tello.update_state_values(vals);
         }
         delay(10);
     }
@@ -233,40 +197,22 @@ void drone_ctrl(void* params){
         digitalWrite(LED_BUILTIN, LOW);
         delay(500);
     }
+
+    delay(500);
+    /* Start sending movement data to the drone */
     digitalWrite(LED_BUILTIN, HIGH);
 
+    // Serial.println("Resp: " + tello.send_cmd_sync("takeoff"));
 
-    Serial.println("Resp: " + send_cmd_sync("takeoff"));
+    // Serial.println("Resp: " + tello.send_cmd_sync("forward 50"));
+    // Serial.println("Resp: " + tello.send_cmd_sync("back 50"));
 
-    Serial.println("Resp: " + send_cmd_sync("forward 50"));
-    Serial.println("Resp: " + send_cmd_sync("back 50"));
-
-    Serial.println("Resp: " + send_cmd_sync("land"));
-
+    // Serial.println("Resp: " + tello.send_cmd_sync("land"));
 
     digitalWrite(LED_BUILTIN, LOW);
 
-    //TODO: Start advertising bluetooth connection, flash neopixel led blue?
-    /* Read each byte from the file into a string (look inside how readFile is implemented), then broadcast that string over bluetooth
-       a device will recieve that message, decode it, and write it out to a .csv file. Write out the name too?*/
-
-    //delay(10000);
-    // Serial.println("Sending sensor data");
-
-    // /* TODO: big problems with this system; may need to break up string into chunks. if the file is too large, may not be able to send data in one chunk */
-    // ble.begin("EcoDrone");
-    // while(1){
-    //     //String msg = readFile(LittleFS, file_name);
-    //     String msg = "sensor data here!!!12345";
-    //     if(msg.isEmpty()){
-    //         Serial.println("Data read error");
-    //         //break;
-    //     }
-    //     else{
-    //         ble.write((const uint8_t*)msg.c_str(), msg.length());
-    //     }
-    //     delay(1000);    
-    // }
+    /* Send data to receiving device */
+    sendDataOverBLE();
 
     vTaskDelete(NULL);
 }
@@ -330,7 +276,7 @@ void setup() {
     /* Initialise connection to Tello, enable SDK mode */
     //TODO: Split off into its own function?
     init_connection();
-    String resp = send_cmd_sync("command");
+    String resp = tello.send_cmd_sync("command");
     if(!resp.equalsIgnoreCase("ok")){
         Serial.println("Error enabling SDK mode.");
     }
