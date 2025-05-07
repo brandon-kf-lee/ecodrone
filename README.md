@@ -6,7 +6,7 @@ This project integrates a DJI Tello and an ESP32-S3 microcontroller with sensors
 * Built in [PlatformIO](https://platformio.org/) through Visual Studio Code
 
 ## How This Project Works
-The Tello drone implements an SDK that allows external devices to communicate with it and issue commands through UDP. The ESP32, which lives on top of the drone, issues those commands in the form of directions that follow a pre-programmed flight path. Simultaneously, the ESP32 is logging sensor data onto its flash storage to be retrieved at a later time. 
+The Tello drone implements an SDK that allows external devices to communicate with it and issue commands through UDP. The ESP32, mounted on top of the drone, issues those commands in the form of directions that follow a pre-programmed flight path. Simultaneously, the ESP32 is logging sensor data onto its flash storage to be retrieved at a later time. 
 
 * The ESP32 will connect to and communicate with the Tello over WiFi/UDP, issuing directional commands.
     * ESP32 will read in its state data (battery percentage, motor time one, etc.) from Tello during runtime.
@@ -14,12 +14,18 @@ The Tello drone implements an SDK that allows external devices to communicate wi
     * For state data, the ESP32 is the server and the Tello connects to it as a client (see SDK for more details).
 * The ESP32 will be preprogrammed with flight path data to send to Tello.
 * The ESP32 will record the Tello's state data and its own sensor data into a file through LittleFS in the csv format. 
-* (Tentative) Continuously broadcast a BLE connection during runtime, used for reporting sensor data (not intended to be connected to until flight completion)
-* (Tentative) After the drone lands, bring an external computer to connect to the ESP32 through Bluetooth LE, and transmit data from the ESP32 to the computer
+* After the drone lands, bring an external computer to connect to the ESP32 through Bluetooth LE, and transmit data from the ESP32 to the computer
+    * Python code to receive data (connect.py) is listed under [addl_resources](https://github.com/brandon-kf-lee/ecodrone/tree/main/addl_resources)
 
 ## Dependencies
 * Python
     * [bleak](https://github.com/hbldh/bleak): Used to connect an external device to the ESP32 through the BLE (Bluetooth Low Energy) module for communication
+* C++
+    * All versions and dependencies are automatically resolved through PlatformIO in platformio.ini
+
+# Considerations when Running
+* Build and upload the drone control software through PlatformIO
+* Ensure hardware specific IDs like the Tello's SSID and IP address are changed to match your drone
 
 ## Hardware Used
 
@@ -38,3 +44,4 @@ The Tello drone implements an SDK that allows external devices to communicate wi
 * [Brandon Lee](https://brandon-kf-lee.github.io/)
 * [Dr. Tom Springer](https://www.chapman.edu/our-faculty/tom-springer), Research Advisor
 * Funded through Chapman University's Undergraduate Research Grant
+* Presented in Chapman University's Student Scholar Symposium on 7 May 2025

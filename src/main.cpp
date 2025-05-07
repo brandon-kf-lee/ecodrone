@@ -202,12 +202,14 @@ void drone_ctrl(void* params){
     /* Start sending movement data to the drone */
     digitalWrite(LED_BUILTIN, HIGH);
 
-    // Serial.println("Resp: " + tello.send_cmd_sync("takeoff"));
+    Serial.println("Resp: " + tello.send_cmd_sync("takeoff"));
+    Serial.println("Resp: " + tello.send_cmd_sync("up 75"));
+    delay(2000);
 
     // Serial.println("Resp: " + tello.send_cmd_sync("forward 50"));
     // Serial.println("Resp: " + tello.send_cmd_sync("back 50"));
 
-    // Serial.println("Resp: " + tello.send_cmd_sync("land"));
+    Serial.println("Resp: " + tello.send_cmd_sync("land"));
 
     digitalWrite(LED_BUILTIN, LOW);
 
