@@ -3,6 +3,8 @@
 ## Overview
 This project integrates a DJI Tello and an ESP32-S3 microcontroller with sensors into one autonomous system. Sensors include true CO2 concentration, temperature, relative humidity, and barometric pressure. Includes ability to fly drone autonomously on pre-planned flight paths and logs sensor data onto the on-board flash.
 
+![alt text](https://github.com/brandon-kf-lee/ecodrone/blob/testing/addl_resources/EcoDrone_Annotated.png "EcoDrone, Annotated")
+
 * Built in [PlatformIO](https://platformio.org/) through Visual Studio Code
 
 ## How This Project Works
